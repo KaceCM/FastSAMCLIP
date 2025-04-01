@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from .utils import image_to_np_ndarray
 from PIL import Image
+import clip 
+
 
 
 class FastSAMPrompt:
@@ -169,13 +171,15 @@ class FastSAMPrompt:
         plt.draw()
 
         try:
-            buf = fig.canvas.tostring_rgb()
+            buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
         except AttributeError:
             fig.canvas.draw()
-            buf = fig.canvas.tostring_rgb()
-        cols, rows = fig.canvas.get_width_height()
-        img_array = np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols, 3)
-        result = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            
+            buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
+            
+
+        rows, cols = buf.shape[:2]
+        result = cv2.cvtColor(buf, cv2.COLOR_RGB2BGR)
         plt.close()
         return result
             
@@ -207,7 +211,12 @@ class FastSAMPrompt:
         if not os.path.exists(path):
             os.makedirs(path)
         result = result[:, :, ::-1]
-        cv2.imwrite(output_path, result)
+        try:
+            cv2.imwrite(output_path, result)
+        except Exception as e:
+            print("PROBLEM WRITING IMAGE: ", e)
+        
+
      
     #   CPU post process
     def fast_show_mask(
