@@ -8,6 +8,7 @@ from .utils import image_to_np_ndarray
 from PIL import Image
 import clip 
 
+CLASS_CANDIDATES = ['wall', 'building', 'sky', 'floor', 'tree', 'ceiling', 'road', 'bed ', 'windowpane', 'grass', 'cabinet', 'sidewalk', 'person', 'earth', 'door', 'table', 'mountain', 'plant', 'curtain', 'chair', 'car', 'water', 'painting', 'sofa', 'shelf', 'house', 'sea', 'mirror', 'rug', 'field', 'armchair', 'seat', 'fence', 'desk', 'rock', 'wardrobe', 'lamp', 'bathtub', 'railing', 'cushion', 'base', 'box', 'column', 'signboard', 'chest of drawers', 'counter', 'sand', 'sink', 'skyscraper', 'fireplace', 'refrigerator', 'grandstand', 'path', 'stairs', 'runway', 'case', 'pool table', 'pillow', 'screen door', 'stairway', 'river', 'bridge', 'bookcase', 'blind', 'coffee table', 'toilet', 'flower', 'book', 'hill', 'bench', 'countertop', 'stove', 'palm', 'kitchen island', 'computer', 'swivel chair', 'boat', 'bar', 'arcade machine', 'hovel', 'bus', 'towel', 'light', 'truck', 'tower', 'chandelier', 'awning', 'streetlight', 'booth', 'television receiver', 'airplane', 'dirt track', 'apparel', 'pole', 'land', 'bannister', 'escalator', 'ottoman', 'bottle', 'buffet', 'poster', 'stage', 'van', 'ship', 'fountain', 'conveyer belt', 'canopy', 'washer', 'plaything', 'swimming pool', 'stool', 'barrel', 'basket', 'waterfall', 'tent', 'bag', 'minibike', 'cradle', 'oven', 'ball', 'food', 'step', 'tank', 'trade name', 'microwave', 'pot', 'animal', 'bicycle', 'lake', 'dishwasher', 'screen', 'blanket', 'sculpture', 'hood', 'sconce', 'vase', 'traffic light', 'tray', 'ashcan', 'fan', 'pier', 'crt screen', 'plate', 'monitor', 'bulletin board', 'shower', 'radiator', 'glass', 'clock', 'flag']
 
 
 class FastSAMPrompt:
@@ -52,6 +53,53 @@ class FastSAMPrompt:
             annotation['area'] = annotation['segmentation'].sum()
             annotations.append(annotation)
         return annotations
+
+    @torch.no_grad()
+    def classify_segments_with_clip(self, class_candidates=None):
+        """
+        Classifie chaque segment avec CLIP et retourne la liste d'annotations enrichie avec les labels.
+        """
+        if self.results is None:
+            return []
+
+        # Liste par défaut si aucune n’est fournie
+        if class_candidates is None:
+            class_candidates = CLASS_CANDIDATES
+
+        # Étape 1 : Formater les résultats pour avoir les bons IDs
+        formatted_results = self._format_results(self.results[0], filter=100)
+
+        # Étape 2 : CROP avec lien vers les IDs (via _second_crop_image)
+        cropped_images, _, mask_ids = self._second_crop_image(formatted_results)
+
+        # Étape 3 : Chargement du modèle CLIP
+        clip_model, preprocess = clip.load("ViT-B/32", device=self.device)
+
+        # Texte : encodage
+        tokenized = clip.tokenize(class_candidates).to(self.device)
+        text_features = clip_model.encode_text(tokenized)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+
+        # Images : encodage
+        preprocessed_images = [preprocess(img).to(self.device) for img in cropped_images]
+        image_features = clip_model.encode_image(torch.stack(preprocessed_images))
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+
+        # Similarité image ↔ texte
+        probs = image_features @ text_features.T
+        predicted_indices = torch.argmax(probs, dim=1).cpu().numpy()
+
+        # Étape 4 : Création des résultats annotés avec label + id
+        labeled_results = []
+        id_to_label = {mask_ids[i]: class_candidates[predicted_indices[i]] for i in range(len(mask_ids))}
+
+        for annotation in formatted_results:
+            seg_id = annotation["id"]
+            annotation["label"] = id_to_label.get(seg_id, "unknown")
+            labeled_results.append(annotation)
+
+        return labeled_results
+
 
     def filter_masks(annotations):  # filte the overlap mask
         annotations.sort(key=lambda x: x['area'], reverse=True)
@@ -383,6 +431,28 @@ class FastSAMPrompt:
             cropped_images.append(bbox)  # Save the bounding box of the cropped image.
 
         return cropped_boxes, cropped_images, not_crop, filter_id, annotations
+    
+    def _second_crop_image(self, format_results):
+        image = Image.fromarray(cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB))
+        ori_w, ori_h = image.size
+        annotations = format_results
+        mask_h, mask_w = annotations[0]['segmentation'].shape
+        if ori_w != mask_w or ori_h != mask_h:
+            image = image.resize((mask_w, mask_h))
+        cropped_boxes = []
+        cropped_images = []
+        mask_id = []
+        filter_id = []
+        for _, mask in enumerate(annotations):
+            if np.sum(mask['segmentation']) <= 100:
+                filter_id.append(mask["id"])
+                continue
+            mask_id.append(mask["id"])
+            bbox = self._get_bbox_from_mask(mask['segmentation'])  # mask 的 bbox
+            cropped_boxes.append(self._segment_image(image, bbox))  
+            cropped_images.append(bbox)  # Save the bounding box of the cropped image.
+
+        return cropped_boxes, cropped_images, mask_id
 
     def box_prompt(self, bbox=None, bboxes=None):
         if self.results == None:
