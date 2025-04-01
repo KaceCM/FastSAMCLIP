@@ -180,14 +180,14 @@ def fast_process(
     plt.draw()
     
     try:
-        buf = fig.canvas.tostring_rgb()
+        buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
     except AttributeError:
         fig.canvas.draw()
-        buf = fig.canvas.tostring_rgb()
+        buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3] 
     
-    cols, rows = fig.canvas.get_width_height()
-    img_array = np.fromstring(buf, dtype=np.uint8).reshape(rows, cols, 3)
-    cv2.imwrite(os.path.join(save_path, result_name), cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+    rows, cols = buf.shape[:2]
+    cv2.imwrite(os.path.join(save_path, result_name), cv2.cvtColor(buf, cv2.COLOR_RGB2BGR))
+
 
 
 # CPU post process
